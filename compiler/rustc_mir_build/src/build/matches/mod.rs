@@ -84,6 +84,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     ///
     /// * From each pre-binding block to the next pre-binding block.
     /// * From each otherwise block to the next pre-binding block.
+    #[instrument(skip(self, span))]
     crate fn match_expr(
         &mut self,
         destination: Place<'tcx>,
@@ -96,7 +97,11 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         let scrutinee_place =
             unpack!(block = self.lower_scrutinee(block, scrutinee, scrutinee_span,));
 
-        let mut arm_candidates = self.create_match_candidates(scrutinee_place, &arms);
+        debug!("scrutinee_place={:?}", scrutinee_place);
+        debug!("block after lowering scrutinee={:?}", block);
+
+        let mut arm_candidates: Vec<(&Arm<'_>, Candidate<'_, '_>)> =
+            self.create_match_candidates(scrutinee_place, &arms);
 
         let match_has_guard = arms.iter().any(|arm| arm.guard.is_some());
         let mut candidates =
@@ -146,6 +151,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     }
 
     /// Create the initial `Candidate`s for a `match` expression.
+    #[instrument(skip(self))]
     fn create_match_candidates<'pat>(
         &mut self,
         scrutinee: Place<'tcx>,
@@ -168,6 +174,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// that candidate.
     ///
     /// Returns the places that need fake borrows because we bind or test them.
+    #[instrument(skip(self, scrutinee_span))]
     fn lower_match_tree<'pat>(
         &mut self,
         block: BasicBlock,
@@ -180,7 +187,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         // them.
         let mut fake_borrows = if match_has_guard { Some(FxHashSet::default()) } else { None };
 
-        let mut otherwise = None;
+        let mut otherwise: Option<BasicBlock> = None;
 
         // This will generate code to test scrutinee_place and
         // branch to the appropriate arm block
@@ -219,6 +226,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// (by [Builder::lower_match_tree]).
     ///
     /// `outer_source_info` is the SourceInfo for the whole match.
+    #[instrument(skip(self, scrutinee_span, fake_borrow_temps, outer_source_info))]
     fn lower_match_arms(
         &mut self,
         destination: Place<'tcx>,
@@ -231,7 +239,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         let arm_end_blocks: Vec<_> = arm_candidates
             .into_iter()
             .map(|(arm, candidate)| {
-                debug!("lowering arm {:?}\ncandidate = {:?}", arm, candidate);
+                debug!("--- lowering arm {:?}\ncandidate = {:?}", arm, candidate);
 
                 let arm_source_info = self.source_info(arm.span);
                 let arm_scope = (arm.scope, arm_source_info);
@@ -255,6 +263,8 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         Some(arm.scope),
                     );
 
+                    debug!("--- lowered arm block={:?}", arm_block);
+
                     if let Some(source_scope) = scope {
                         this.source_scope = source_scope;
                     }
@@ -266,6 +276,8 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 
         // all the arm blocks will rejoin here
         let end_block = self.cfg.start_new_block();
+
+        debug!("--- end_block={:?}", end_block);
 
         for arm_block in arm_end_blocks {
             self.cfg.goto(unpack!(arm_block), outer_source_info, end_block);
@@ -282,6 +294,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// Also check if the guard matches, if it's provided.
     /// `arm_scope` should be `Some` if and only if this is called for a
     /// `match` arm.
+    #[instrument(skip(self, outer_source_info, scrutinee_span))]
     fn bind_pattern(
         &mut self,
         outer_source_info: SourceInfo,
@@ -508,6 +521,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// scope for the bindings in these patterns, if such a scope had to be
     /// created. NOTE: Declaring the bindings should always be done in their
     /// drop scope.
+    #[instrument(skip(self, scope_span))]
     crate fn declare_bindings(
         &mut self,
         mut visibility_scope: Option<SourceScope>,
@@ -516,7 +530,6 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         has_guard: ArmHasGuard,
         opt_match_place: Option<(Option<&Place<'tcx>>, Span)>,
     ) -> Option<SourceScope> {
-        debug!("declare_bindings: pattern={:?}", pattern);
         self.visit_primary_bindings(
             &pattern,
             UserTypeProjections::none(),
@@ -572,6 +585,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// Visit all of the primary bindings in a patterns, that is, visit the
     /// leftmost occurrence of each variable bound in a pattern. A variable
     /// will occur more than once in an or-pattern.
+    #[instrument(skip(self, f))]
     pub(super) fn visit_primary_bindings(
         &mut self,
         pattern: &Pat<'tcx>,
@@ -587,10 +601,6 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             UserTypeProjections,
         ),
     ) {
-        debug!(
-            "visit_primary_bindings: pattern={:?} pattern_user_ty={:?}",
-            pattern, pattern_user_ty
-        );
         match *pattern.kind {
             PatKind::Binding {
                 mutability,
@@ -900,6 +910,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// if `x.0` matches `false` (for the third arm). In the (impossible at
     /// runtime) case when `x.0` is now `true`, we branch to
     /// `otherwise_block`.
+    #[instrument(skip(self, span))]
     fn match_candidates<'pat>(
         &mut self,
         span: Span,
@@ -908,18 +919,17 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         candidates: &mut [&mut Candidate<'pat, 'tcx>],
         fake_borrows: &mut Option<FxHashSet<Place<'tcx>>>,
     ) {
-        debug!(
-            "matched_candidate(span={:?}, candidates={:?}, start_block={:?}, otherwise_block={:?})",
-            span, candidates, start_block, otherwise_block,
-        );
-
         // Start by simplifying candidates. Once this process is complete, all
         // the match pairs which remain require some form of test, whether it
         // be a switch or pattern comparison.
         let mut split_or_candidate = false;
-        for candidate in &mut *candidates {
+        for candidate in candidates.iter_mut() {
+            debug!("candidate before simplification = {:#?}", candidate);
             split_or_candidate |= self.simplify_candidate(candidate);
+            debug!("candidate after simplification  = {:#?}", candidate);
         }
+
+        debug!("split_or_candidate={:?}", split_or_candidate);
 
         ensure_sufficient_stack(|| {
             if split_or_candidate {
@@ -928,13 +938,19 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 let mut new_candidates = Vec::new();
 
                 for candidate in candidates {
-                    candidate.visit_leaves(|leaf_candidate| new_candidates.push(leaf_candidate));
+                    candidate.visit_leaves(|leaf_candidate| {
+                        debug!("pushing leaf candidate {:?}", leaf_candidate);
+                        new_candidates.push(leaf_candidate)
+                    });
                 }
+
+                debug!("new candidates after moving or-pat subcands={:#?}", new_candidates);
+
                 self.match_simplified_candidates(
                     span,
                     start_block,
                     otherwise_block,
-                    &mut *new_candidates,
+                    new_candidates.as_mut(),
                     fake_borrows,
                 );
             } else {
@@ -949,6 +965,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         });
     }
 
+    #[instrument(skip(self, span))]
     fn match_simplified_candidates(
         &mut self,
         span: Span,
@@ -961,10 +978,12 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         // higher priority candidates (and hence at the front of the slice)
         // have satisfied all their match pairs.
         let fully_matched = candidates.iter().take_while(|c| c.match_pairs.is_empty()).count();
-        debug!("match_candidates: {:?} candidates fully matched", fully_matched);
+        debug!("match_simplified_candidates: {:?} candidates fully matched", fully_matched);
         let (matched_candidates, unmatched_candidates) = candidates.split_at_mut(fully_matched);
 
-        let block = if !matched_candidates.is_empty() {
+        let block = if matched_candidates.is_empty() {
+            start_block
+        } else {
             let otherwise_block =
                 self.select_matched_candidates(matched_candidates, start_block, fake_borrows);
 
@@ -977,8 +996,6 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 }
                 self.cfg.start_new_block()
             }
-        } else {
-            start_block
         };
 
         // If there are no candidates that still need testing, we're
@@ -1029,6 +1046,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     ///
     /// [pre-binding block]: Candidate::pre_binding_block
     /// [otherwise block]: Candidate::otherwise_block
+    #[instrument(skip(self))]
     fn select_matched_candidates(
         &mut self,
         matched_candidates: &mut [&mut Candidate<'_, 'tcx>],
@@ -1164,6 +1182,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     ///      |
     ///     ...
     /// ```
+    #[instrument(skip(self, span))]
     fn test_candidates_with_or(
         &mut self,
         span: Span,
@@ -1219,6 +1238,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         )
     }
 
+    #[instrument(skip(self))]
     fn test_or_pattern<'pat>(
         &mut self,
         candidate: &mut Candidate<'pat, 'tcx>,
@@ -1228,7 +1248,6 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         place: Place<'tcx>,
         fake_borrows: &mut Option<FxHashSet<Place<'tcx>>>,
     ) {
-        debug!("test_or_pattern:\ncandidate={:#?}\npats={:#?}", candidate, pats);
         let mut or_candidates: Vec<_> =
             pats.iter().map(|pat| Candidate::new(place, pat, candidate.has_guard)).collect();
         let mut or_candidate_refs: Vec<_> = or_candidates.iter_mut().collect();
@@ -1250,6 +1269,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 
     /// Try to merge all of the subcandidates of the given candidate into one.
     /// This avoids exponentially large CFGs in cases like `(1 | 2, 3 | 4, ...)`.
+    #[instrument(skip(self, source_info))]
     fn merge_trivial_subcandidates(
         &mut self,
         candidate: &mut Candidate<'_, 'tcx>,
@@ -1402,6 +1422,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// In addition to avoiding exponential-time blowups, this algorithm
     /// also has the nice property that each guard and arm is only generated
     /// once.
+    #[instrument(skip(self, span))]
     fn test_candidates<'pat, 'b, 'c>(
         &mut self,
         span: Span,
@@ -1487,11 +1508,13 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             // apply. Collect a list of blocks where control flow will
             // branch if one of the `target_candidate` sets is not
             // exhaustive.
+            debug!("target_candidates={:#?}", target_candidates);
             let target_blocks: Vec<_> = target_candidates
                 .into_iter()
                 .map(|mut candidates| {
                     if !candidates.is_empty() {
                         let candidate_start = this.cfg.start_new_block();
+                        debug!("created(1) {:?}", candidate_start);
                         this.match_candidates(
                             span,
                             candidate_start,
@@ -1501,13 +1524,21 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         );
                         candidate_start
                     } else {
-                        *remainder_start.get_or_insert_with(|| this.cfg.start_new_block())
+                        *remainder_start.get_or_insert_with(|| {
+                            let ret = this.cfg.start_new_block();
+                            debug!("created(2) {:?}", ret);
+                            ret
+                        })
                     }
                 })
                 .collect();
 
             if !candidates.is_empty() {
-                let remainder_start = remainder_start.unwrap_or_else(|| this.cfg.start_new_block());
+                let remainder_start = remainder_start.unwrap_or_else(|| {
+                    let ret = this.cfg.start_new_block();
+                    debug!("created(3) {:?}", ret);
+                    ret
+                });
                 this.match_candidates(
                     span,
                     remainder_start,
@@ -1545,6 +1576,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// 4. The fake borrows may be of places in inactive variants, so it would
     ///    be UB to generate code for them. They therefore have to be removed
     ///    by a MIR pass run after borrow checking.
+    #[instrument(skip(self, temp_span))]
     fn calculate_fake_borrows<'b>(
         &mut self,
         fake_borrows: &'b FxHashSet<Place<'tcx>>,
@@ -1609,6 +1641,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// Note: we do not check earlier that if there is a guard,
     /// there cannot be move bindings. We avoid a use-after-move by only
     /// moving the binding once the guard has evaluated to true (see below).
+    #[instrument(skip(self, parent_bindings))]
     fn bind_and_guard_matched_candidate<'pat>(
         &mut self,
         candidate: Candidate<'pat, 'tcx>,
@@ -1619,8 +1652,6 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         arm_span: Option<Span>,
         schedule_drops: bool,
     ) -> BasicBlock {
-        debug!("bind_and_guard_matched_candidate(candidate={:?})", candidate);
-
         debug_assert!(candidate.match_pairs.is_empty());
 
         let candidate_source_info = self.source_info(candidate.span);
@@ -1871,6 +1902,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 
     /// Append `AscribeUserType` statements onto the end of `block`
     /// for each ascription
+    #[instrument(skip(self, ascriptions))]
     fn ascribe_types<'b>(
         &mut self,
         block: BasicBlock,
@@ -1904,6 +1936,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         }
     }
 
+    #[instrument(skip(self, bindings))]
     fn bind_matched_candidate_for_guard<'b>(
         &mut self,
         block: BasicBlock,
@@ -1956,6 +1989,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         }
     }
 
+    #[instrument(skip(self, bindings))]
     fn bind_matched_candidate_for_arm_body<'b>(
         &mut self,
         block: BasicBlock,
@@ -1964,8 +1998,6 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     ) where
         'tcx: 'b,
     {
-        debug!("bind_matched_candidate_for_arm_body(block={:?})", block);
-
         let re_erased = self.hir.tcx().lifetimes.re_erased;
         // Assign each of the bindings. This may trigger moves out of the candidate.
         for binding in bindings {
@@ -1995,6 +2027,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// first local is a binding for occurrences of `var` in the guard, which
     /// will have type `&T`. The second local is a binding for occurrences of
     /// `var` in the arm body, which will have type `T`.
+    #[instrument(skip(self))]
     fn declare_binding(
         &mut self,
         source_info: SourceInfo,
@@ -2009,12 +2042,6 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         opt_match_place: Option<(Option<Place<'tcx>>, Span)>,
         pat_span: Span,
     ) {
-        debug!(
-            "declare_binding(var_id={:?}, name={:?}, mode={:?}, var_ty={:?}, \
-             visibility_scope={:?}, source_info={:?})",
-            var_id, name, mode, var_ty, visibility_scope, source_info
-        );
-
         let tcx = self.hir.tcx();
         let debug_source_info = SourceInfo { span: source_info.span, scope: visibility_scope };
         let binding_mode = match mode {

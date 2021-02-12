@@ -37,12 +37,12 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     ///
     /// only generates a single switch. If this happens this method returns
     /// `true`.
+    #[instrument(skip(self))]
     pub(super) fn simplify_candidate<'pat>(
         &mut self,
         candidate: &mut Candidate<'pat, 'tcx>,
     ) -> bool {
         // repeatedly simplify match pairs until fixed point is reached
-        debug!(?candidate, "simplify_candidate");
 
         // existing_bindings and new_bindings exists to keep the semantics in order.
         // Reversing the binding order for bindings after `@` changes the binding order in places
@@ -66,10 +66,12 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         let mut new_bindings = Vec::new();
         loop {
             let match_pairs = mem::take(&mut candidate.match_pairs);
+            debug!("match_pairs={:?}", match_pairs);
 
             if let [MatchPair { pattern: Pat { kind: box PatKind::Or { pats }, .. }, place }] =
                 *match_pairs
             {
+                debug!("!!!!! simplifying or match pair");
                 existing_bindings.extend_from_slice(&new_bindings);
                 mem::swap(&mut candidate.bindings, &mut existing_bindings);
                 candidate.subcandidates = self.create_or_subcandidates(candidate, place, pats);
@@ -122,6 +124,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// Given `candidate` that has a single or-pattern for its match-pairs,
     /// creates a fresh candidate for each of its input subpatterns passed via
     /// `pats`.
+    #[instrument(skip(self))]
     fn create_or_subcandidates<'pat>(
         &mut self,
         candidate: &Candidate<'pat, 'tcx>,
@@ -142,6 +145,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// have been pushed into the candidate. If no simplification is
     /// possible, `Err` is returned and no changes are made to
     /// candidate.
+    #[instrument(skip(self))]
     fn simplify_match_pair<'pat>(
         &mut self,
         match_pair: MatchPair<'pat, 'tcx>,

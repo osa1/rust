@@ -146,6 +146,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         }
     }
 
+    #[instrument(skip(self, make_target_blocks))]
     pub(super) fn perform_test(
         &mut self,
         block: BasicBlock,
@@ -153,14 +154,6 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         test: &Test<'tcx>,
         make_target_blocks: impl FnOnce(&mut Self) -> Vec<BasicBlock>,
     ) {
-        debug!(
-            "perform_test({:?}, {:?}: {:?}, {:?})",
-            block,
-            place,
-            place.ty(&self.local_decls, self.hir.tcx()),
-            test
-        );
-
         let source_info = self.source_info(test.span);
         match test.kind {
             TestKind::Switch { adt_def, ref variants } => {
@@ -209,6 +202,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 
             TestKind::SwitchInt { switch_ty, ref options } => {
                 let target_blocks = make_target_blocks(self);
+                debug!("target_blocks={:?}", target_blocks);
                 let terminator = if *switch_ty.kind() == ty::Bool {
                     assert!(!options.is_empty() && options.len() <= 2);
                     if let [first_bb, second_bb] = *target_blocks {

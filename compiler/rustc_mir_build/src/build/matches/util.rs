@@ -22,6 +22,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             .collect()
     }
 
+    #[instrument(skip(self))]
     crate fn prefix_slice_suffix<'pat>(
         &mut self,
         match_pairs: &mut SmallVec<[MatchPair<'pat, 'tcx>; 1]>,
