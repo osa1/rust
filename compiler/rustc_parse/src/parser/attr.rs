@@ -26,6 +26,7 @@ pub(super) const DEFAULT_INNER_ATTR_FORBIDDEN: InnerAttrPolicy<'_> = InnerAttrPo
 
 impl<'a> Parser<'a> {
     /// Parses attributes that appear before an item.
+    #[tracing::instrument(skip(self))]
     pub(super) fn parse_outer_attributes(&mut self) -> PResult<'a, Vec<ast::Attribute>> {
         let mut attrs: Vec<ast::Attribute> = Vec::new();
         let mut just_parsed_doc_comment = false;

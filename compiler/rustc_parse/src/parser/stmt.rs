@@ -297,6 +297,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses a block. No inner attributes are allowed.
+    #[tracing::instrument(skip(self))]
     pub(super) fn parse_block(&mut self) -> PResult<'a, P<Block>> {
         let (attrs, block) = self.parse_inner_attrs_and_block()?;
         if let [.., last] = &*attrs {
@@ -352,6 +353,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses a block. Inner attributes are allowed.
+    #[tracing::instrument(skip(self))]
     pub(super) fn parse_inner_attrs_and_block(
         &mut self,
     ) -> PResult<'a, (Vec<Attribute>, P<Block>)> {
@@ -359,6 +361,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses a block. Inner attributes are allowed.
+    #[tracing::instrument(skip(self, lo))]
     pub(super) fn parse_block_common(
         &mut self,
         lo: Span,
@@ -381,6 +384,7 @@ impl<'a> Parser<'a> {
 
     /// Parses the rest of a block expression or function body.
     /// Precondition: already parsed the '{'.
+    #[tracing::instrument(skip(self, lo))]
     crate fn parse_block_tail(
         &mut self,
         lo: Span,

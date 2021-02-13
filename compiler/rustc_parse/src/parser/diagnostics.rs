@@ -121,7 +121,7 @@ crate enum ConsumeClosingDelim {
     No,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum AttemptLocalParseRecovery {
     Yes,
     No,

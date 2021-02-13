@@ -11,6 +11,7 @@ use rustc_span::Span;
 use std::ascii;
 use tracing::debug;
 
+#[derive(Debug)]
 pub enum LitError {
     NotLiteral,
     LexerError,
