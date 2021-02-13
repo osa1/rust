@@ -107,9 +107,14 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         let mut candidates =
             arm_candidates.iter_mut().map(|(_, candidate)| candidate).collect::<Vec<_>>();
 
+        debug!("candidates before lower_match_tree={:#?}", candidates);
+
         let fake_borrow_temps =
             self.lower_match_tree(block, scrutinee_span, match_has_guard, &mut candidates);
 
+        debug!("candidates after lower_match_tree={:#?}", candidates);
+
+        // This is where we create the merge point for or-pat candidates
         self.lower_match_arms(
             destination,
             scrutinee_place,
@@ -333,6 +338,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             // To handle this we instead unschedule it's drop after each time
             // we lower the guard.
             let target_block = self.cfg.start_new_block();
+            debug!("target_block = {:?}", target_block);
             let mut schedule_drops = true;
             // We keep a stack of all of the bindings and type asciptions
             // from the parent candidates that we visit, that also need to
