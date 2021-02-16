@@ -285,6 +285,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         debug!("--- end_block={:?}", end_block);
 
         for arm_block in arm_end_blocks {
+            debug!("--- {:?} --> {:?}", arm_block.0, end_block);
             self.cfg.goto(unpack!(arm_block), outer_source_info, end_block);
         }
 
@@ -339,39 +340,117 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             // we lower the guard.
             let target_block = self.cfg.start_new_block();
             debug!("target_block = {:?}", target_block);
-            let mut schedule_drops = true;
-            // We keep a stack of all of the bindings and type asciptions
-            // from the parent candidates that we visit, that also need to
-            // be bound for each candidate.
-            traverse_candidate(
-                candidate,
-                &mut Vec::new(),
-                &mut |leaf_candidate, parent_bindings| {
-                    if let Some(arm_scope) = arm_scope {
-                        self.clear_top_scope(arm_scope);
-                    }
-                    let binding_end = self.bind_and_guard_matched_candidate(
-                        leaf_candidate,
-                        parent_bindings,
-                        guard,
-                        &fake_borrow_temps,
-                        scrutinee_span,
-                        arm_span,
-                        schedule_drops,
-                    );
-                    if arm_scope.is_none() {
-                        schedule_drops = false;
-                    }
-                    self.cfg.goto(binding_end, outer_source_info, target_block);
-                },
-                |inner_candidate, parent_bindings| {
-                    parent_bindings.push((inner_candidate.bindings, inner_candidate.ascriptions));
-                    inner_candidate.subcandidates.into_iter()
-                },
-                |parent_bindings| {
-                    parent_bindings.pop();
-                },
-            );
+
+
+            let have_subcandidate_bindings_or_guards = {
+                let mut have_subcandidate_bindings_or_guards = false;
+                traverse_candidate(
+                    candidate.clone(),
+                    &mut have_subcandidate_bindings_or_guards,
+                    &mut |leaf_candidate, have_subcandidate_bindings_or_guards| {
+                        *have_subcandidate_bindings_or_guards |= !leaf_candidate.bindings.is_empty() || leaf_candidate.has_guard || !leaf_candidate.ascriptions.is_empty();
+                    },
+                    |inner_candidate, _| {
+                        inner_candidate.subcandidates.into_iter()
+                    },
+                    |_| {},
+                );
+                have_subcandidate_bindings_or_guards
+            };
+
+            debug!("have_subcandidate_bindings = {:?}", have_subcandidate_bindings_or_guards);
+
+            // When the subcandidates don't have bindings, we don't need binding blocks, so
+            // generate a single binding block and jump to it
+            // let have_subcandidate_bindings_or_guards = true;
+            let have_subcandidate_bindings_or_guards = true;
+            if !have_subcandidate_bindings_or_guards && guard.is_none() {
+
+                let binding_block = self.cfg.start_new_block();
+
+                let mut schedule_drops = true;
+                traverse_candidate(
+                    candidate,
+                    // Context
+                    &mut (),
+                    // visit leaf
+                    &mut |candidate, ()| {
+                        if let Some(arm_scope) = arm_scope {
+                            self.clear_top_scope(arm_scope);
+                        }
+
+                        let candidate_source_info = self.source_info(candidate.span);
+
+                        let mut block = candidate.pre_binding_block.unwrap();
+
+                        if candidate.next_candidate_pre_binding_block.is_some() {
+                            let fresh_block = self.cfg.start_new_block();
+                            self.false_edges(
+                                block,
+                                fresh_block,
+                                candidate.next_candidate_pre_binding_block,
+                                candidate_source_info,
+                            );
+                            block = fresh_block;
+                        }
+
+                        if arm_scope.is_none() {
+                            schedule_drops = false;
+                        }
+
+                        self.cfg.goto(block, outer_source_info, binding_block);
+                    },
+                    // get children
+                    |inner_candidate, ()| {
+                        inner_candidate.subcandidates.into_iter()
+                    },
+                    // complete children
+                    |()| {
+                    },
+                );
+
+                self.bind_matched_candidate_for_arm_body(binding_block, schedule_drops, vec![].into_iter());
+
+                self.cfg.goto(binding_block, outer_source_info, target_block);
+            } else {
+                let mut schedule_drops = true;
+                // We keep a stack of all of the bindings and type asciptions
+                // from the parent candidates that we visit, that also need to
+                // be bound for each candidate.
+                traverse_candidate(
+                    candidate,
+                    // context (parent_binding)
+                    &mut Vec::new(),
+                    // visit leaf
+                    &mut |leaf_candidate, parent_bindings| {
+                        if let Some(arm_scope) = arm_scope {
+                            self.clear_top_scope(arm_scope);
+                        }
+                        let binding_end = self.bind_and_guard_matched_candidate(
+                            leaf_candidate,
+                            parent_bindings,
+                            guard,
+                            &fake_borrow_temps,
+                            scrutinee_span,
+                            arm_span,
+                            schedule_drops,
+                        );
+                        if arm_scope.is_none() {
+                            schedule_drops = false;
+                        }
+                        self.cfg.goto(binding_end, outer_source_info, target_block);
+                    },
+                    // get children
+                    |inner_candidate, parent_bindings| {
+                        parent_bindings.push((inner_candidate.bindings, inner_candidate.ascriptions));
+                        inner_candidate.subcandidates.into_iter()
+                    },
+                    // complete children
+                    |parent_bindings| {
+                        parent_bindings.pop();
+                    },
+                );
+            }
 
             target_block
         }
@@ -704,7 +783,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Candidate<'pat, 'tcx> {
     /// [`Span`] of the original pattern that gave rise to this candidate.
     span: Span,
@@ -994,6 +1073,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 self.select_matched_candidates(matched_candidates, start_block, fake_borrows);
 
             if let Some(last_otherwise_block) = otherwise_block {
+                debug!("match_simplified_candidates returning last_otherwise_block={:?}", last_otherwise_block);
                 last_otherwise_block
             } else {
                 // Any remaining candidates are unreachable.
@@ -1003,6 +1083,8 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 self.cfg.start_new_block()
             }
         };
+
+        debug!("match_simplified_candidates block={:?}", block);
 
         // If there are no candidates that still need testing, we're
         // done. Since all matches are exhaustive, execution should
