@@ -196,7 +196,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 
         // This will generate code to test scrutinee_place and
         // branch to the appropriate arm block
+        debug!("candidates before match_candidates={:#?}", candidates);
         self.match_candidates(scrutinee_span, block, &mut otherwise, candidates, &mut fake_borrows);
+        debug!("candidates after match_candidates={:#?}", candidates);
 
         if let Some(otherwise_block) = otherwise {
             // See the doc comment on `match_candidates` for why we may have an
@@ -311,6 +313,10 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         arm_span: Option<Span>,
         arm_scope: Option<region::Scope>,
     ) -> BasicBlock {
+        debug!("bind_pattern candidate={:#?}", candidate);
+        debug!("bind_pattern guard={:#?}", guard);
+        debug!("bind_pattern arm_scope={:#?}", arm_scope);
+
         if candidate.subcandidates.is_empty() {
             // Avoid generating another `BasicBlock` when we only have one
             // candidate.
@@ -1038,6 +1044,8 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     new_candidates.as_mut(),
                     fake_borrows,
                 );
+
+                debug!("new candidates after match_simplified_candidates={:#?}", new_candidates);
             } else {
                 self.match_simplified_candidates(
                     span,
@@ -1073,7 +1081,10 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 self.select_matched_candidates(matched_candidates, start_block, fake_borrows);
 
             if let Some(last_otherwise_block) = otherwise_block {
-                debug!("match_simplified_candidates returning last_otherwise_block={:?}", last_otherwise_block);
+                debug!(
+                    "match_simplified_candidates returning last_otherwise_block={:?}",
+                    last_otherwise_block
+                );
                 last_otherwise_block
             } else {
                 // Any remaining candidates are unreachable.
@@ -1740,11 +1751,17 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         arm_span: Option<Span>,
         schedule_drops: bool,
     ) -> BasicBlock {
+        debug!("parent_bindings={:#?}", parent_bindings);
+
         debug_assert!(candidate.match_pairs.is_empty());
 
         let candidate_source_info = self.source_info(candidate.span);
 
         let mut block = candidate.pre_binding_block.unwrap();
+
+        debug!("guard.is_none()={}", guard.is_none());
+        debug!("fake_borrows.is_empty()={}", fake_borrows.is_empty());
+        debug!("schedule_drops={}", schedule_drops);
 
         if candidate.next_candidate_pre_binding_block.is_some() {
             let fresh_block = self.cfg.start_new_block();
