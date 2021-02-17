@@ -11,7 +11,7 @@ use crate::build::{BlockAnd, BlockAndExtension, Builder};
 use crate::build::{GuardFrame, GuardFrameLocal, LocalsForNode};
 use crate::thir::{self, *};
 use rustc_data_structures::{
-    fx::{FxHashSet, FxIndexMap},
+    fx::{FxHashMap, FxHashSet, FxIndexMap},
     stack::ensure_sufficient_stack,
 };
 use rustc_hir::HirId;
@@ -303,7 +303,10 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 scrutinee_span,
                 arm_span,
                 true,
+                &mut Default::default(),
+                outer_source_info,
             )
+            .unwrap()
         } else {
             // It's helpful to avoid scheduling drops multiple times to save
             // drop elaboration from having to clean up the extra drops.
@@ -320,14 +323,21 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             // To handle this we instead unschedule it's drop after each time
             // we lower the guard.
             let target_block = self.cfg.start_new_block();
+
             let mut schedule_drops = true;
+
+            let mut target_blocks: FxHashMap<Vec<(HirId, Place<'tcx>)>, BasicBlock> =
+                Default::default();
+
             // We keep a stack of all of the bindings and type asciptions
             // from the parent candidates that we visit, that also need to
             // be bound for each candidate.
+            let mut parent_bindings: Vec<(Vec<Binding<'_>>, Vec<Ascription<'_>>)> = vec![];
+
             traverse_candidate(
                 candidate,
-                &mut Vec::new(),
-                &mut |leaf_candidate, parent_bindings| {
+                &mut (&mut parent_bindings, &mut target_blocks),
+                &mut |leaf_candidate, (parent_bindings, target_blocks)| {
                     if let Some(arm_scope) = arm_scope {
                         self.clear_top_scope(arm_scope);
                     }
@@ -339,17 +349,21 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         scrutinee_span,
                         arm_span,
                         schedule_drops,
+                        target_blocks,
+                        outer_source_info,
                     );
                     if arm_scope.is_none() {
                         schedule_drops = false;
                     }
-                    self.cfg.goto(binding_end, outer_source_info, target_block);
+                    if let Some(binding_end) = binding_end {
+                        self.cfg.goto(binding_end, outer_source_info, target_block);
+                    }
                 },
-                |inner_candidate, parent_bindings| {
+                |inner_candidate, (parent_bindings, _target_blocks)| {
                     parent_bindings.push((inner_candidate.bindings, inner_candidate.ascriptions));
                     inner_candidate.subcandidates.into_iter()
                 },
-                |parent_bindings| {
+                |(parent_bindings, _target_blocks)| {
                     parent_bindings.pop();
                 },
             );
@@ -1618,7 +1632,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         scrutinee_span: Span,
         arm_span: Option<Span>,
         schedule_drops: bool,
-    ) -> BasicBlock {
+        target_blocks: &mut FxHashMap<Vec<(HirId, Place<'tcx>)>, BasicBlock>,
+        outer_source_info: SourceInfo,
+    ) -> Option<BasicBlock> {
         debug!("bind_and_guard_matched_candidate(candidate={:?})", candidate);
 
         debug_assert!(candidate.match_pairs.is_empty());
@@ -1627,15 +1643,38 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 
         let mut block = candidate.pre_binding_block.unwrap();
 
+        let bind_chain: Vec<(HirId, Place<'tcx>)> = parent_bindings
+            .iter()
+            .flat_map(|(binds, _)| binds.iter().map(|bind| (bind.var_id, bind.source)))
+            .collect();
+
         if candidate.next_candidate_pre_binding_block.is_some() {
-            let fresh_block = self.cfg.start_new_block();
-            self.false_edges(
-                block,
-                fresh_block,
-                candidate.next_candidate_pre_binding_block,
-                candidate_source_info,
-            );
-            block = fresh_block;
+            match target_blocks.get(&bind_chain) {
+                Some(target_block) => {
+                    self.false_edges(
+                        block,
+                        *target_block,
+                        candidate.next_candidate_pre_binding_block,
+                        candidate_source_info,
+                    );
+                    return None;
+                }
+                None => {
+                    let fresh_block = self.cfg.start_new_block();
+                    self.false_edges(
+                        block,
+                        fresh_block,
+                        candidate.next_candidate_pre_binding_block,
+                        candidate_source_info,
+                    );
+                    block = fresh_block;
+                }
+            }
+        }
+
+        if let Some(target_block) = target_blocks.get(&bind_chain) {
+            self.cfg.goto(block, outer_source_info, *target_block);
+            return None;
         }
 
         self.ascribe_types(
@@ -1645,6 +1684,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 .flat_map(|(_, ascriptions)| ascriptions)
                 .chain(&candidate.ascriptions),
         );
+
+        let match_target: BasicBlock;
+        let ret: BasicBlock;
 
         // rust-lang/rust#27282: The `autoref` business deserves some
         // explanation here.
@@ -1727,6 +1769,8 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         //    * So we eagerly create the reference for the arm and then take a
         //      reference to that.
         if let Some(guard) = guard {
+            match_target = block;
+
             let tcx = self.hir.tcx();
             let bindings = parent_bindings
                 .iter()
@@ -1852,7 +1896,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             assert!(schedule_drops, "patterns with guards must schedule drops");
             self.bind_matched_candidate_for_arm_body(post_guard_block, true, by_value_bindings);
 
-            post_guard_block
+            ret = post_guard_block
         } else {
             // (Here, it is not too early to bind the matched
             // candidate on `block`, because there is no guard result
@@ -1865,8 +1909,13 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     .flat_map(|(bindings, _)| bindings)
                     .chain(&candidate.bindings),
             );
-            block
+            match_target = block;
+            ret = block;
         }
+
+        target_blocks.insert(bind_chain, match_target);
+
+        Some(ret)
     }
 
     /// Append `AscribeUserType` statements onto the end of `block`
