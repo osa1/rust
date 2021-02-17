@@ -1704,21 +1704,34 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         debug!("fake_borrows.is_empty()={}", fake_borrows.is_empty());
         debug!("schedule_drops={}", schedule_drops);
 
-        if candidate.next_candidate_pre_binding_block.is_some() {
-            let fresh_block = self.cfg.start_new_block();
-            self.false_edges(
-                block,
-                fresh_block,
-                candidate.next_candidate_pre_binding_block,
-                candidate_source_info,
-            );
-            block = fresh_block;
-        }
-
         let bind_chain: Vec<(HirId, Place<'tcx>)> = parent_bindings
             .iter()
             .flat_map(|(binds, _)| binds.iter().map(|bind| (bind.var_id, bind.source)))
             .collect();
+
+        if candidate.next_candidate_pre_binding_block.is_some() {
+            match target_blocks.get(&bind_chain) {
+                Some(target_block) => {
+                    self.false_edges(
+                        block,
+                        *target_block,
+                        candidate.next_candidate_pre_binding_block,
+                        candidate_source_info,
+                    );
+                    return None;
+                }
+                None => {
+                    let fresh_block = self.cfg.start_new_block();
+                    self.false_edges(
+                        block,
+                        fresh_block,
+                        candidate.next_candidate_pre_binding_block,
+                        candidate_source_info,
+                    );
+                    block = fresh_block;
+                }
+            }
+        }
 
         if let Some(target_block) = target_blocks.get(&bind_chain) {
             self.cfg.goto(block, outer_source_info, *target_block);
@@ -1960,9 +1973,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             ret = block;
         }
 
-        if self.hir.tcx().sess.opts.cg.or_pat_opt {
-            target_blocks.insert(bind_chain, match_target);
-        }
+        target_blocks.insert(bind_chain, match_target);
 
         Some(ret)
     }
