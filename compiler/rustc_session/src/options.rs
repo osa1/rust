@@ -835,6 +835,7 @@ options! {CodegenOptions, CodegenSetter, basic_codegen_options,
     target_feature: String = (String::new(), parse_target_feature, [TRACKED],
         "target specific attributes. (`rustc --print target-features` for details). \
         This feature is unsafe."),
+    or_pat_opt: bool = (false, parse_bool, [UNTRACKED], "blah blah"),
 
     // This list is in alphabetical order.
     //
