@@ -1725,7 +1725,8 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             return None;
         }
 
-        let target_block: BasicBlock;
+        let match_target: BasicBlock;
+        let ret: BasicBlock;
 
         self.ascribe_types(
             block,
@@ -1822,6 +1823,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 .flat_map(|(bindings, _)| bindings)
                 .chain(&candidate.bindings);
 
+            match_target = block;
             self.bind_matched_candidate_for_guard(block, schedule_drops, bindings.clone());
             let guard_frame = GuardFrame {
                 locals: bindings.map(|b| GuardFrameLocal::new(b.var_id, b.binding_mode)).collect(),
@@ -1941,7 +1943,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             assert!(schedule_drops, "patterns with guards must schedule drops");
             self.bind_matched_candidate_for_arm_body(post_guard_block, true, by_value_bindings);
 
-            target_block = post_guard_block;
+            ret = post_guard_block;
         } else {
             // (Here, it is not too early to bind the matched
             // candidate on `block`, because there is no guard result
@@ -1954,14 +1956,15 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     .flat_map(|(bindings, _)| bindings)
                     .chain(&candidate.bindings),
             );
-            target_block = block;
+            match_target = block;
+            ret = block;
         }
 
         if self.hir.tcx().sess.opts.cg.or_pat_opt {
-            target_blocks.insert(bind_chain, target_block);
+            target_blocks.insert(bind_chain, match_target);
         }
 
-        Some(target_block)
+        Some(ret)
     }
 
     /// Append `AscribeUserType` statements onto the end of `block`
