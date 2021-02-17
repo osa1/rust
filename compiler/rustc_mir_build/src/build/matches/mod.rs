@@ -347,116 +347,43 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             let target_block = self.cfg.start_new_block();
             debug!("target_block = {:?}", target_block);
 
-
-            let have_subcandidate_bindings_or_guards = {
-                let mut have_subcandidate_bindings_or_guards = false;
-                traverse_candidate(
-                    candidate.clone(),
-                    &mut have_subcandidate_bindings_or_guards,
-                    &mut |leaf_candidate, have_subcandidate_bindings_or_guards| {
-                        *have_subcandidate_bindings_or_guards |= !leaf_candidate.bindings.is_empty() || leaf_candidate.has_guard || !leaf_candidate.ascriptions.is_empty();
-                    },
-                    |inner_candidate, _| {
-                        inner_candidate.subcandidates.into_iter()
-                    },
-                    |_| {},
-                );
-                have_subcandidate_bindings_or_guards
-            };
-
-            debug!("have_subcandidate_bindings = {:?}", have_subcandidate_bindings_or_guards);
-
-            // When the subcandidates don't have bindings, we don't need binding blocks, so
-            // generate a single binding block and jump to it
-            // let have_subcandidate_bindings_or_guards = true;
-            let have_subcandidate_bindings_or_guards = true;
-            if !have_subcandidate_bindings_or_guards && guard.is_none() {
-
-                let binding_block = self.cfg.start_new_block();
-
-                let mut schedule_drops = true;
-                traverse_candidate(
-                    candidate,
-                    // Context
-                    &mut (),
-                    // visit leaf
-                    &mut |candidate, ()| {
-                        if let Some(arm_scope) = arm_scope {
-                            self.clear_top_scope(arm_scope);
-                        }
-
-                        let candidate_source_info = self.source_info(candidate.span);
-
-                        let mut block = candidate.pre_binding_block.unwrap();
-
-                        if candidate.next_candidate_pre_binding_block.is_some() {
-                            let fresh_block = self.cfg.start_new_block();
-                            self.false_edges(
-                                block,
-                                fresh_block,
-                                candidate.next_candidate_pre_binding_block,
-                                candidate_source_info,
-                            );
-                            block = fresh_block;
-                        }
-
-                        if arm_scope.is_none() {
-                            schedule_drops = false;
-                        }
-
-                        self.cfg.goto(block, outer_source_info, binding_block);
-                    },
-                    // get children
-                    |inner_candidate, ()| {
-                        inner_candidate.subcandidates.into_iter()
-                    },
-                    // complete children
-                    |()| {
-                    },
-                );
-
-                self.bind_matched_candidate_for_arm_body(binding_block, schedule_drops, vec![].into_iter());
-
-                self.cfg.goto(binding_block, outer_source_info, target_block);
-            } else {
-                let mut schedule_drops = true;
-                // We keep a stack of all of the bindings and type asciptions
-                // from the parent candidates that we visit, that also need to
-                // be bound for each candidate.
-                traverse_candidate(
-                    candidate,
-                    // context (parent_binding)
-                    &mut Vec::new(),
-                    // visit leaf
-                    &mut |leaf_candidate, parent_bindings| {
-                        if let Some(arm_scope) = arm_scope {
-                            self.clear_top_scope(arm_scope);
-                        }
-                        let binding_end = self.bind_and_guard_matched_candidate(
-                            leaf_candidate,
-                            parent_bindings,
-                            guard,
-                            &fake_borrow_temps,
-                            scrutinee_span,
-                            arm_span,
-                            schedule_drops,
-                        );
-                        if arm_scope.is_none() {
-                            schedule_drops = false;
-                        }
-                        self.cfg.goto(binding_end, outer_source_info, target_block);
-                    },
-                    // get children
-                    |inner_candidate, parent_bindings| {
-                        parent_bindings.push((inner_candidate.bindings, inner_candidate.ascriptions));
-                        inner_candidate.subcandidates.into_iter()
-                    },
-                    // complete children
-                    |parent_bindings| {
-                        parent_bindings.pop();
-                    },
-                );
-            }
+            let mut schedule_drops = true;
+            // We keep a stack of all of the bindings and type asciptions
+            // from the parent candidates that we visit, that also need to
+            // be bound for each candidate.
+            traverse_candidate(
+                candidate,
+                // context (parent_binding)
+                &mut Vec::new(),
+                // visit leaf
+                &mut |leaf_candidate, parent_bindings| {
+                    if let Some(arm_scope) = arm_scope {
+                        self.clear_top_scope(arm_scope);
+                    }
+                    let binding_end = self.bind_and_guard_matched_candidate(
+                        leaf_candidate,
+                        parent_bindings,
+                        guard,
+                        &fake_borrow_temps,
+                        scrutinee_span,
+                        arm_span,
+                        schedule_drops,
+                    );
+                    if arm_scope.is_none() {
+                        schedule_drops = false;
+                    }
+                    self.cfg.goto(binding_end, outer_source_info, target_block);
+                },
+                // get children
+                |inner_candidate, parent_bindings| {
+                    parent_bindings.push((inner_candidate.bindings, inner_candidate.ascriptions));
+                    inner_candidate.subcandidates.into_iter()
+                },
+                // complete children
+                |parent_bindings| {
+                    parent_bindings.pop();
+                },
+            );
 
             target_block
         }
