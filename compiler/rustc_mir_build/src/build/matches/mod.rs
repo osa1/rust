@@ -1658,10 +1658,14 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 
         let mut block = candidate.pre_binding_block.unwrap();
 
-        let bind_chain: Vec<(HirId, Place<'tcx>)> = parent_bindings
+        let mut bind_chain: Vec<(HirId, Place<'tcx>)> = parent_bindings
             .iter()
             .flat_map(|(binds, _)| binds.iter().map(|bind| (bind.var_id, bind.source)))
             .collect();
+
+        for bind in &candidate.bindings {
+            bind_chain.push((bind.var_id, bind.source));
+        }
 
         if candidate.next_candidate_pre_binding_block.is_some() {
             match target_blocks.get(&bind_chain) {
