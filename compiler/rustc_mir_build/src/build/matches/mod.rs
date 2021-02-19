@@ -1697,7 +1697,22 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 return None;
             }
             None => {
-                target_blocks.insert(bind_chain, block);
+                // We can't reuse the guard block of this branch as 'false' continuation of the
+                // guard block will be different for other leaf candidates. Example:
+                //
+                //     match e {
+                //         <p1> | <p2> if <test> => ...,
+                //         _ => ...,
+                //      }
+                //
+                // Here when `<p1>` matches, the block for the guard will jump to test `<p2>` on
+                // failure. The block for the guard after testing `<p2>` will jump to the default
+                // arm on failure.
+                //
+                // Conclusion: we can't reuse guard blocks when lowering or patterns.
+                if guard.is_none() {
+                    target_blocks.insert(bind_chain, block);
+                }
             }
         }
 
